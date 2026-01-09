@@ -40,7 +40,7 @@ Before you make the query, think about which table and column you should use.
 
 10. Ordering and limits
     Use ORDER BY only when the question needs sorted results.
-    For top-N, prefer: ORDER BY … FETCH FIRST n ROWS ONLY.
+    For top-N, prefer: "ORDER BY … FETCH FIRST n ROWS ONLY".
 
 11. Literals and dates
     Most of dates and times are expressed in VARCHAR2.(ex. 2025-09-17 → '20250917', 2025-09-17 16:29:39 → '20250917162939')
@@ -81,6 +81,8 @@ Before you make the query, think about which table and column you should use.
     Unless otherwise instructed by the user, follow the existing directives.
 
 21. If you need to use TO_DATE() or TO_TIMESTAMP(), make sure that the row satisfies the format. To check it, use VALIDATE_CONVERSION() in WHERE statement.
+
+22. When joining multiple tables, ensure that every table with a time or date column is pre-filtered using the specified time range. Avoid joining unfiltered time-partitioned tables.
 ==========
 [Database schema]
 # Table: frpm

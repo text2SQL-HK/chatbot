@@ -43,13 +43,15 @@ export default function ChatInput({
   clarificationState,
   showSqlButton = false,
   sqlRunLoading = false,
+  sqlTestLoading = false,
   onRunSql = () => {},
+  onTestSql = () => {},
   canAddContext = false,
   onGenerateContextQuestions = async () => [],
   onSaveContextAnswers = async () => {},
   onFetchContextNotes = async () => [],
   onSaveFreeformContext = async () => {},
-  currentDbName = "",
+  currentDbId = "",
   onFetchDbList = async () => [],
   onChangeDb = async () => {},
 }) {
@@ -113,8 +115,8 @@ export default function ChatInput({
     }
   };
 
-  const handleDbOptionSelect = (dbName) => {
-    setDbSelection(dbName);
+  const handleDbOptionSelect = (dbId) => {
+    setDbSelection(dbId);
     closeDbDropdown();
   };
 
@@ -305,7 +307,7 @@ export default function ChatInput({
             .filter(Boolean)
         : [];
       setDbList(normalized);
-      const trimmedCurrent = (currentDbName || "").trim();
+      const trimmedCurrent = (currentDbId || "").trim();
       const defaultSelection = normalized.includes(trimmedCurrent)
         ? trimmedCurrent
         : normalized[0] || "";
@@ -560,19 +562,29 @@ export default function ChatInput({
               DB 변경하기
             </button>
             <span className="db-indicator">
-              현재 DB: {currentDbName ? currentDbName : "미선택"}
+              현재 DB: {currentDbId ? currentDbId : "미선택"}
             </span>
           </>
         )}
         {showSqlButton && (
-          <button
-            type="button"
-            className="sql-generate-button"
-            disabled={disabled || loading || sqlRunLoading}
-            onClick={onRunSql}
-          >
-            SQL 실행하기
-          </button>
+          <>
+            <button
+              type="button"
+              className="sql-generate-button"
+              disabled={disabled || loading || sqlRunLoading || sqlTestLoading}
+              onClick={onRunSql}
+            >
+              SQL 실행하기
+            </button>
+            <button
+              type="button"
+              className="sql-test-button"
+              disabled={disabled || loading || sqlRunLoading || sqlTestLoading}
+              onClick={onTestSql}
+            >
+              SQL 테스트하기
+            </button>
+          </>
         )}
       </div>
       <div className="input-row">
@@ -672,22 +684,22 @@ export default function ChatInput({
                     dbActiveIndex >= 0 ? `db-option-${dbActiveIndex}` : undefined
                   }
                 >
-                  {dbList.map((dbName, index) => {
-                    const isSelected = dbSelection === dbName;
+                  {dbList.map((dbId, index) => {
+                    const isSelected = dbSelection === dbId;
                     const isActive = dbActiveIndex === index;
                     return (
                       <button
-                        key={dbName}
+                        key={dbId}
                         type="button"
                         id={`db-option-${index}`}
                         role="option"
                         aria-selected={isSelected}
                         className={`db-dropdown-option${isActive ? " active" : ""}${isSelected ? " selected" : ""}`}
-                        onClick={() => handleDbOptionSelect(dbName)}
+                        onClick={() => handleDbOptionSelect(dbId)}
                         onMouseEnter={() => setDbActiveIndex(index)}
                         disabled={dbSubmitting}
                       >
-                        {dbName}
+                        {dbId}
                       </button>
                     );
                   })}

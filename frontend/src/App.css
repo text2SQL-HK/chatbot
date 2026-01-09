@@ -494,7 +494,8 @@ pre[class*="language-"] {
   min-height: 44px;
 }
 
-.chat-input .sql-generate-button {
+.chat-input .sql-generate-button,
+.chat-input .sql-test-button {
   padding: 10px 22px;
   border-radius: 18px;
   border: 1px solid rgb(0,0,0,0);
@@ -506,12 +507,14 @@ pre[class*="language-"] {
   min-height: 44px;
 }
 
-.chat-input .sql-generate-button:disabled {
+.chat-input .sql-generate-button:disabled,
+.chat-input .sql-test-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
-.chat-input .sql-generate-button:not(:disabled):active {
+.chat-input .sql-generate-button:not(:disabled):active,
+.chat-input .sql-test-button:not(:disabled):active {
   transform: scale(0.98);
 }
 

@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import UserSetup from "./components/UserSetup.jsx";
 import MessageList from "./components/MessageList.jsx";
 import ChatInput from "./components/ChatInput.jsx";
 
 const DEFAULT_STATUS = "사용자 ID를 입력하면 대화를 시작할 수 있어요.";
+const SQL_LOADING_MESSAGE = "SQL을 생성 중입니다...";
 const USER_ID_MAX_LENGTH = 255;
 const USER_ID_ALLOWED_PATTERN = /^[a-z0-9_.-]+$/;
 const USER_ID_START_PATTERN = /^[a-z0-9]/;
-const DEFAULT_JOB_POLL_INTERVAL = 5;
-
 const isInlineImage = (value) =>
   typeof value === "string" && value.startsWith("data:image/");
 
@@ -167,6 +166,11 @@ const applySqlAugmentations = (history, augmentations) => {
   return result;
 };
 
+const stripSqlLoadingMessages = (history = []) =>
+  history.filter(
+    (item) => !(item?.role === "assistant" && item?.type === "loading"),
+  );
+
 const pruneSqlAugmentations = (history, augmentations) => {
   if (!augmentations || Object.keys(augmentations).length === 0) {
     return augmentations;
@@ -227,14 +231,13 @@ export default function App() {
   const [sqlAugmentations, setSqlAugmentations] = useState({});
   const [tableMoreLoading, setTableMoreLoading] = useState({});
   const [loading, setLoading] = useState(false);
-  const [pendingSqlJob, setPendingSqlJob] = useState(null);
   const [sqlMode, setSqlMode] = useState(false);
   const [sqlRunning, setSqlRunning] = useState(false);
+  const [sqlTesting, setSqlTesting] = useState(false);
   const [lastAssistantSql, setLastAssistantSql] = useState("");
   const [showSqlButton, setShowSqlButton] = useState(false);
-  const [currentDbName, setCurrentDbName] = useState("");
+  const [currentDbId, setCurrentDbId] = useState("");
   const [dbListCache, setDbListCache] = useState([]);
-  const jobPollingRef = useRef(null);
 
   const renderedHistory = useMemo(
     () => applySqlAugmentations(chatHistory, sqlAugmentations),
@@ -249,8 +252,6 @@ export default function App() {
       setStatusMessage(`${storedId}로 다시 시작하려면 '시작' 버튼을 눌러주세요.`);
     }
   }, []);
-
-  useEffect(() => () => clearJobPolling(), []);
 
   const handlePendingUserIdChange = (value) => {
     setPendingUserId(value);
@@ -267,6 +268,7 @@ export default function App() {
       setLastAssistantSql("");
       setSqlMode(false);
       setSqlRunning(false);
+      setSqlTesting(false);
       setShowSqlButton(false);
       setTableMoreLoading({});
       return;
@@ -301,6 +303,7 @@ export default function App() {
       setLastAssistantSql("");
       setSqlMode(false);
       setSqlRunning(false);
+      setSqlTesting(false);
       setSqlAugmentations({});
       setShowSqlButton(false);
       setTableMoreLoading({});
@@ -310,12 +313,11 @@ export default function App() {
   const loadUserDb = async (userId) => {
     try {
       const data = await resolveJson(`/chat/db/${encodeURIComponent(userId)}`);
-      const dbName =
-        typeof data.db_name === "string" ? data.db_name.trim() : "";
-      setCurrentDbName(dbName);
-      return dbName;
+      const dbId = typeof data.db_id === "string" ? data.db_id.trim() : "";
+      setCurrentDbId(dbId);
+      return dbId;
     } catch (_error) {
-      setCurrentDbName("");
+      setCurrentDbId("");
       return "";
     }
   };
@@ -334,11 +336,11 @@ export default function App() {
     return normalized;
   };
 
-  const changeDb = async (dbName) => {
+  const changeDb = async (dbId) => {
     if (!currentUserId) {
       throw new Error("사용자 ID를 먼저 설정해 주세요.");
     }
-    const trimmed = (dbName || "").trim();
+    const trimmed = (dbId || "").trim();
     if (!trimmed) {
       throw new Error("변경할 DB를 선택해 주세요.");
     }
@@ -349,109 +351,11 @@ export default function App() {
       },
       body: JSON.stringify({
         user_id: currentUserId,
-        db_name: trimmed,
+        db_id: trimmed,
       }),
     });
-    setCurrentDbName(trimmed);
+    setCurrentDbId(trimmed);
     return trimmed;
-  };
-
-  const clearJobPolling = () => {
-    if (jobPollingRef.current) {
-      clearTimeout(jobPollingRef.current);
-      jobPollingRef.current = null;
-    }
-  };
-
-  const scheduleSqlJobPolling = (jobInfo, delaySeconds) => {
-    const safeDelay = Math.max(1, Math.round(delaySeconds || DEFAULT_JOB_POLL_INTERVAL));
-    clearJobPolling();
-    jobPollingRef.current = setTimeout(() => {
-      pollSqlJob(jobInfo).catch((error) => {
-        clearJobPolling();
-        setPendingSqlJob(null);
-        setStatusMessage(error.message || "SQL 작업 상태를 확인하지 못했습니다.");
-        setLoading(false);
-      });
-    }, safeDelay * 1000);
-  };
-
-  const pollSqlJob = async (jobInfo) => {
-    if (!jobInfo || !jobInfo.job_id || !currentUserId) {
-      setLoading(false);
-      return;
-    }
-    const queryParam = currentUserId
-      ? `?user_id=${encodeURIComponent(currentUserId)}`
-      : "";
-    const statusPayload = await resolveJson(
-      `/chat/sql/job-status/${encodeURIComponent(jobInfo.job_id)}${queryParam}`,
-    );
-    const rawStatus = typeof statusPayload.status === "string"
-      ? statusPayload.status.toLowerCase()
-      : "";
-    if (["succeeded", "failed", "not_found", "completed"].includes(rawStatus)) {
-      clearJobPolling();
-      try {
-        const finalizePayload = await resolveJson("/chat/sql/job-finalize", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            user_id: currentUserId,
-            job_id: jobInfo.job_id,
-          }),
-        });
-        const history = Array.isArray(finalizePayload.history)
-          ? mapHistoryItems(finalizePayload.history)
-          : [];
-        if (history.length) {
-          setChatHistory(history);
-          setSqlAugmentations((prev) => pruneSqlAugmentations(history, prev));
-          const sqlSnippet = getLastAssistantSql(history);
-          setLastAssistantSql(sqlSnippet);
-          setShowSqlButton(Boolean(sqlSnippet));
-        } else {
-          await loadHistory(currentUserId);
-        }
-      } catch (error) {
-        setStatusMessage(error.message || "SQL 작업 결과를 반영하는 중 오류가 발생했습니다.");
-        await loadHistory(currentUserId);
-      } finally {
-        setPendingSqlJob(null);
-        setLoading(false);
-      }
-      return;
-    }
-    const intervalSeconds =
-      Number(
-        statusPayload.suggested_poll_interval ??
-          jobInfo.suggested_poll_interval ??
-          DEFAULT_JOB_POLL_INTERVAL,
-      ) || DEFAULT_JOB_POLL_INTERVAL;
-    scheduleSqlJobPolling(
-      {
-        ...jobInfo,
-        suggested_poll_interval: intervalSeconds,
-      },
-      intervalSeconds,
-    );
-  };
-
-  const startSqlJobWatcher = (jobInfo) => {
-    if (!jobInfo || !jobInfo.job_id) {
-      setLoading(false);
-      return;
-    }
-    setStatusMessage("SQL을 생성하는 중입니다. 잠시만 기다려 주세요.");
-    setPendingSqlJob(jobInfo);
-    pollSqlJob(jobInfo).catch((error) => {
-      clearJobPolling();
-      setPendingSqlJob(null);
-      setStatusMessage(error.message || "SQL 작업 상태를 확인하지 못했습니다.");
-      setLoading(false);
-    });
   };
 
   const activateUser = async (userId) => {
@@ -474,7 +378,7 @@ export default function App() {
     setStatusMessage(`${trimmed}님, 대화를 시작해 보세요.`);
     window.localStorage.setItem("chatbot_user_id", trimmed);
     setSqlMode(false);
-    setCurrentDbName("");
+    setCurrentDbId("");
     await loadHistory(trimmed);
     await loadUserDb(trimmed);
   };
@@ -488,12 +392,11 @@ export default function App() {
     window.localStorage.removeItem("chatbot_user_id");
     setSqlMode(false);
     setSqlRunning(false);
+    setSqlTesting(false);
     setLastAssistantSql("");
     setSqlAugmentations({});
     setShowSqlButton(false);
-    setCurrentDbName("");
-    clearJobPolling();
-    setPendingSqlJob(null);
+    setCurrentDbId("");
     setLoading(false);
   };
 
@@ -508,11 +411,18 @@ export default function App() {
     }
 
     const userMessage = { role: "user", type: "text", content: trimmed };
-    setChatHistory((prev) => [...prev, userMessage]);
-    clearJobPolling();
-    setPendingSqlJob(null);
+    setChatHistory((prev) => {
+      const next = [...prev, userMessage];
+      if (sqlMode) {
+        next.push({
+          role: "assistant",
+          type: "loading",
+          content: SQL_LOADING_MESSAGE,
+        });
+      }
+      return next;
+    });
     setLoading(true);
-    let keepLoading = false;
 
     try {
       const data = await resolveJson("/chat", {
@@ -541,7 +451,7 @@ export default function App() {
           { role: "assistant", content: assistantResponse },
         ]);
         setChatHistory((prev) => {
-          const updated = [...prev, ...nextMessages];
+          const updated = [...stripSqlLoadingMessages(prev), ...nextMessages];
           setSqlAugmentations((augmentations) =>
             pruneSqlAugmentations(updated, augmentations),
           );
@@ -551,40 +461,30 @@ export default function App() {
           return updated;
         });
       }
-      const pendingJob = data.pending_job;
-      if (pendingJob && pendingJob.job_id) {
-        keepLoading = true;
-        startSqlJobWatcher({
-          job_id: pendingJob.job_id,
-          suggested_poll_interval:
-            Number(pendingJob.suggested_poll_interval) || DEFAULT_JOB_POLL_INTERVAL,
-        });
-      }
     } catch (error) {
-      setChatHistory((prev) => {
-        const updated = [
-          ...prev,
-          {
-            role: "assistant",
-            type: "text",
-            content: error.message || "요청 처리 중 오류가 발생했습니다.",
-          },
-        ];
-        setSqlAugmentations((augmentations) =>
-          pruneSqlAugmentations(updated, augmentations),
-        );
-        return updated;
-      });
-      setSqlRunning(false);
-    } finally {
-      if (!keepLoading) {
-        setLoading(false);
-      }
-    }
-  };
+    setChatHistory((prev) => {
+      const updated = [
+        ...stripSqlLoadingMessages(prev),
+        {
+          role: "assistant",
+          type: "text",
+          content: error.message || "요청 처리 중 오류가 발생했습니다.",
+        },
+      ];
+      setSqlAugmentations((augmentations) =>
+        pruneSqlAugmentations(updated, augmentations),
+      );
+      return updated;
+    });
+    setSqlRunning(false);
+    setSqlTesting(false);
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleRunSql = async () => {
-    if (!currentUserId || !lastAssistantSql || sqlRunning) {
+    if (!currentUserId || !lastAssistantSql || sqlRunning || sqlTesting) {
       return;
     }
     setSqlRunning(true);
@@ -679,6 +579,105 @@ export default function App() {
       }));
     } finally {
       setSqlRunning(false);
+    }
+  };
+
+  const handleTestSql = async () => {
+    if (!currentUserId || !lastAssistantSql || sqlRunning || sqlTesting) {
+      return;
+    }
+    setSqlTesting(true);
+    setTableMoreLoading({});
+    try {
+      const data = await resolveJson("/chat/sql/test", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: currentUserId,
+          sql: lastAssistantSql,
+        }),
+      });
+
+      if (Array.isArray(data.history) && data.history.length) {
+        const mapped = mapHistoryItems(data.history);
+        setChatHistory(mapped);
+        setSqlAugmentations((prev) => pruneSqlAugmentations(mapped, prev));
+        const sqlSnippet = getLastAssistantSql(mapped);
+        setLastAssistantSql(sqlSnippet);
+        setShowSqlButton(Boolean(sqlSnippet));
+        return;
+      }
+
+      const responseText =
+        data.message || data.response || "SQL 테스트 요청을 완료했습니다.";
+
+      const nextMessages = [
+        {
+          role: "assistant",
+          type: "text",
+          content: responseText,
+        },
+      ];
+
+      const tableHeaders =
+        data.headers || data.table_headers || data.columns || [];
+      const tableRows = data.rows || data.table_rows || [];
+      const rawTableNumber = data.table_number;
+      const parsedTableNumber =
+        typeof rawTableNumber === "number"
+          ? rawTableNumber
+          : typeof rawTableNumber === "string" && rawTableNumber.trim()
+            ? Number(rawTableNumber)
+            : null;
+      const tableNumber =
+        parsedTableNumber !== null && Number.isFinite(parsedTableNumber)
+          ? parsedTableNumber
+          : null;
+      const hasMore = Boolean(data.has_more);
+      const csvPath = typeof data.csv_path === "string" ? data.csv_path : null;
+      if (Array.isArray(tableHeaders) && Array.isArray(tableRows) && tableRows.length) {
+        const normalizedHeaders = tableHeaders.map((header) => String(header));
+        const normalizedRows = tableRows.map((row) =>
+          Array.isArray(row)
+            ? row.map((cell) => (cell == null ? "" : String(cell)))
+            : [],
+        );
+        nextMessages.push({
+          role: "assistant",
+          type: "table",
+          headers: normalizedHeaders,
+          rows: normalizedRows,
+          tableInfo: typeof data.table_info === "string" ? data.table_info : null,
+          csv: typeof data.csv === "string" ? data.csv : null,
+          csvPath,
+          tableNumber,
+          hasMore,
+        });
+      }
+
+      const augmentationAnchor = lastAssistantSql;
+      const augmentationMessages = nextMessages.map((message) => ({ ...message }));
+      setSqlAugmentations((prev) => ({
+        ...prev,
+        [augmentationAnchor]: augmentationMessages,
+      }));
+      setShowSqlButton(Boolean(augmentationAnchor));
+    } catch (error) {
+      const augmentationAnchor = lastAssistantSql;
+      setSqlAugmentations((prev) => ({
+        ...prev,
+        [augmentationAnchor]: [
+          {
+            role: "assistant",
+            type: "text",
+            content: error.message || "SQL 테스트 중 오류가 발생했습니다.",
+          },
+        ],
+      }));
+    } finally {
+      setSqlTesting(false);
     }
   };
 
@@ -908,12 +907,14 @@ export default function App() {
           showSqlButton={showSqlButton}
           sqlRunLoading={sqlRunning}
           onRunSql={handleRunSql}
+          sqlTestLoading={sqlTesting}
+          onTestSql={handleTestSql}
           canAddContext={Boolean(currentUserId)}
           onGenerateContextQuestions={generateContextQuestions}
           onSaveContextAnswers={saveContextAnswers}
           onSaveFreeformContext={saveFreeformContext}
           onFetchContextNotes={fetchContextNotes}
-          currentDbName={currentDbName}
+          currentDbId={currentDbId}
           onFetchDbList={fetchDbList}
           onChangeDb={changeDb}
         />

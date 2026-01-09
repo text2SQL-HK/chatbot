@@ -37,22 +37,34 @@ from langchain_community.document_loaders import JSONLoader, TextLoader
 from neo4j import GraphDatabase
 import numpy as np
 from openai import OpenAI
+
 #endregion
 # --- 경로/환경 설정 -------------------------------------------------------------------
-APP_DIR = Path(__file__).resolve().parent.parent
-BASE_DIR = APP_DIR.parent
-PROMPT_DIR = APP_DIR / "prompts"
+try:
+    from ..config import PROMPT_DIR, BASE_DIR, APP_DIR, PLOT_IMAGE_NAME, PLOT_TMP_DIR, ORACLE_JSON_PATH
+    from ..tools.tools import TOOLS, plot, execute_python, text_to_sql
+except ImportError:
+    try:
+        from tts_chatbot.app.config import PROMPT_DIR, BASE_DIR, APP_DIR, PLOT_IMAGE_NAME, PLOT_TMP_DIR, ORACLE_JSON_PATH
+        from tts_chatbot.app.tools.tools import TOOLS, plot, execute_python, text_to_sql
+    except ImportError:
+        import sys
+
+        _app_dir = Path(__file__).resolve().parents[1]
+        if str(_app_dir) not in sys.path:
+            sys.path.insert(0, str(_app_dir))
+        from config import PROMPT_DIR, BASE_DIR, APP_DIR, PLOT_IMAGE_NAME, PLOT_TMP_DIR, ORACLE_JSON_PATH
+        from tools.tools import TOOLS, plot, execute_python, text_to_sql
 
 #API key 입력 혹은 환경변수로 설정해주셔야 합니다
 # Configure OPENAI_API_KEY in the process environment.
 
 OPENAI_CLIENT = OpenAI()
 RESPONSES_MODEL = os.environ.get("CHATBOT_RESPONSES_MODEL", "gpt-5.2")
-MCP_SERVER_URL = "https://wdhdh3.ngrok.io/mcp"
-MCP_SERVER_LABEL = "demo-echo"
 
-PLOT_IMAGE_NAME = "plot"
-PLOT_TMP_DIR = "/home"
+with open(ORACLE_JSON_PATH, "r", encoding="utf-8") as f:
+    ORACLE_JSON = json.load(f)
+
 SQL_EXEC_TRACK_URL = os.environ.get("SQL_EXEC_TRACK_URL", "http://127.0.0.1:1234/ui/sql_exec")
 # --- 프롬프트 로더 --------------------------------------------------------------------
 def load_prompt(path: Path) -> str:
@@ -113,26 +125,6 @@ def table_info_maker(rows, cols) -> str:
         result_lines.append(f" ({col}, type: {dtype})\n")
     result_lines.append("]")
     return "".join(result_lines)
-
-def extract_sql(text: str) -> Optional[str]:
-    end_pos = text.rfind("```")
-    if end_pos == -1:
-        return None
-    start_pos = text.rfind("```", 0, end_pos)
-    if start_pos == -1:
-        return None
-    inner_content = text[start_pos + 3 : end_pos]
-    first_newline_pos = inner_content.find("\n")
-    if first_newline_pos == -1:
-        return ""
-    content_after_start_line = inner_content[first_newline_pos + 1 :]
-    last_newline_pos = content_after_start_line.rfind("\n")
-    if last_newline_pos == -1:
-        sql = content_after_start_line
-    else:
-        sql = content_after_start_line[:last_newline_pos]
-    return sql.replace(";", "")
-
 
 def _record_sql_execution(user_id: str) -> None:
     if not user_id:
@@ -212,17 +204,18 @@ def _allocate_csv_path(container) -> Tuple[str, str]:
 
 def run_sql(
     sql: str,
-    db_name: str,
-    user_id: str
+    db_id: str,
+    user_id: str,
+    save_csv: bool = True
 ) -> Dict[str, Any]:
     """
     sql 가져와서 실행하고 컨테이너 생성 후 그 안에 저장하는 함수.
     """
-    user = ORACLE_JSON[db_name]["ORACLE_USER"]
-    host = ORACLE_JSON[db_name]["ORACLE_HOST"]
-    port = ORACLE_JSON[db_name]["ORACLE_PORT"]
-    service_name = ORACLE_JSON[db_name]["ORACLE_SERVICE_NAME"]
-    password = ORACLE_JSON[db_name]["ORACLE_PASSWORD"]
+    user = ORACLE_JSON[db_id]["ORACLE_USER"]
+    host = ORACLE_JSON[db_id]["ORACLE_HOST"]
+    port = ORACLE_JSON[db_id]["ORACLE_PORT"]
+    service_name = ORACLE_JSON[db_id]["ORACLE_SERVICE_NAME"]
+    password = ORACLE_JSON[db_id]["ORACLE_PASSWORD"]
     if not is_safe_query(sql):
         print("Not Safe!")
     oracledb.init_oracle_client(lib_dir="/tmp/opt/oracle/instantclient_19_28")
@@ -234,6 +227,14 @@ def run_sql(
         cur.execute(sql)
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
+    if not save_csv:
+        table_info = table_info_maker(rows, cols)
+        serializable_rows = [["" if cell is None else str(cell) for cell in row] for row in rows]
+        return {
+            "table_info": table_info,
+            "headers": [str(col) for col in cols],
+            "rows": serializable_rows,
+        }
     #csv 생성
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -275,10 +276,20 @@ def run_sql(
         "csv_path": dest_path_in_container,
     }
 
+def test_sql(
+    sql: str,
+    db_id: str,
+    user_id: str
+) -> Dict[str, Any]:
+    """
+    SQL 실행 테스트 함수. 오직 10개의 행만 반환.
+    """
+    new_sql = f"{sql} FETCH FIRST 10 ROWS ONLY"
+    return run_sql(new_sql, db_id, user_id, save_csv=False)
 
 def format_docs(docs: List[Document]) -> str:
     """
-    Document 객체 리스트의 page_content를 
+    Document 객체 리스트의 page_content를
     하나의 문자열로 합칩니다.
     """
     return "\n\n".join(doc.page_content for doc in docs)
@@ -292,7 +303,6 @@ def run_chat_turn(
     sanitized_history: List[Dict[str, str]] = []
     for entry in chat_history:
         if entry.get("type", "") != "":
-            # Responses API가 허용하지 않는 사용처 전용 로그는 제외한다.
             continue
         role = entry.get("role")
         if role is None:
@@ -306,63 +316,63 @@ def run_chat_turn(
     for chat in sanitized_history:
         if chat["role"] != "system":
             print(chat)
-    tools_payload = _build_tools_payload()
     start = time.time()
     response = OPENAI_CLIENT.responses.create(
         model=RESPONSES_MODEL,
         input=sanitized_history,
-        tools=tools_payload,
-        reasoning={"effort": "medium"},
-        tool_choice="auto" if tools_payload else "none",
+        tools=TOOLS,
+        reasoning={"effort": "medium"}
+    )
+    sanitized_history += response.output
+    print(sanitized_history)
+    for item in response.output:
+        if item.type == "function_call":
+            args = json.loads(item.arguments)
+            if item.name == "plot":
+                plot_result = plot(**args)
+                sanitized_history.append({
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": json.dumps({
+                        "plot": plot_result
+                    })  
+                })
+            elif item.name == "execute_python":
+                execute_result = execute_python(**args)
+                sanitized_history.append({
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": json.dumps({
+                        "execute_python": execute_result
+                    })
+                })
+            elif item.name == "text_to_sql":
+                text_to_sql_result = text_to_sql(**args)
+                sanitized_history.append({
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": json.dumps({
+                        "text_to_sql": text_to_sql_result
+                    })
+                })
+    response = OPENAI_CLIENT.responses.create(
+        model = RESPONSES_MODEL,
+        input = sanitized_history,
+        tools = TOOLS,
+        reasoning = {"effort": "medium"}
     )
     elapsed = time.time() - start
     print(f"API took {elapsed:.4f} seconds")
-    assistant_reply, mcp_calls = _extract_response_payload(response)
+    assistant_reply, _ = _extract_response_payload(response)
     assistant_reply = assistant_reply.strip()
-
-    pending_job: Optional[Dict[str, Any]] = None
-    latest_job_data: Optional[Dict[str, Any]] = None
-    for call in mcp_calls:
-        if call.get("name") in {"text_to_sql", "check_text_to_sql"}:
-            payload = call.get("output_data")
-            if isinstance(payload, dict):
-                latest_job_data = payload
-
-    if latest_job_data:
-        status = str(latest_job_data.get("status", "")).lower()
-        if not status and latest_job_data.get("job_id"):
-            status = "queued"
-        if status in {"queued", "running"}:
-            pending_job = {
-                "job_id": latest_job_data.get("job_id"),
-                "status": status,
-                "suggested_poll_interval": latest_job_data.get("suggested_poll_interval", latest_job_data.get("poll_interval", 5)),
-                "question": latest_job_data.get("question"),
-                "user_id": latest_job_data.get("user_id"),
-            }
-            assistant_reply = ""
-        elif status in {"failed", "not_found"} and not assistant_reply:
-            error_msg = latest_job_data.get("error") or "원인을 확인하지 못했습니다."
-            assistant_reply = f"SQL 생성에 실패했습니다. 사유: {error_msg}"
-        elif status == "succeeded" and not assistant_reply:
-            result_sql = latest_job_data.get("result")
-            if result_sql:
-                trimmed_sql = str(result_sql).strip()
-                assistant_reply = (
-                    "**SQL**\n``` sql\n"
-                    f"{trimmed_sql}\n"
-                    "```\n``` description\n"
-                    "사용자 요청에 따라 생성된 SQL입니다.\n"
-                    "```"
-                )
 
     if assistant_reply:
         chat_history.append({"role": "assistant", "content": assistant_reply})
         print(chat_history)
 
     if assistant_reply.startswith("**PLOT**"):
-        client = docker.from_env()
-        container = _ensure_plot_container(client, user_id)
+        docker_client = docker.from_env()
+        container = _ensure_plot_container(docker_client, user_id)
         try: stream, stat = container.get_archive(f"{PLOT_TMP_DIR}/output.png")
         except: exit()
         file_like = io.BytesIO(b"".join(stream))
@@ -380,17 +390,4 @@ def run_chat_turn(
     return {
         "response": assistant_reply,
         "chat_history": chat_history,
-        "pending_job": pending_job,
     }
-
-def _build_tools_payload() -> List[Dict[str, Any]]:
-    if not MCP_SERVER_URL:
-        return []
-    return [
-        {
-            "type": "mcp",
-            "server_label": MCP_SERVER_LABEL,
-            "server_url": MCP_SERVER_URL,
-            "require_approval": "never",
-        }
-    ]

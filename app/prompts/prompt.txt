@@ -1,0 +1,22 @@
+오라클 문법에 맞게 SQL 생성해줘.
+
+You must keep the output format. Do not use semicolon ;. Your SQL should between ```sql and ```.
+    ex)
+    ```sql
+    SELECT *
+    FROM T1
+    ```
+[Context]
+{context}
+
+[Database schema]
+{desc_str}
+
+[Foreign keys]
+{fk_str}
+
+[Question]
+{query}
+
+[Evidence]
+{evidence}
