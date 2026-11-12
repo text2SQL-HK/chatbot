@@ -218,7 +218,7 @@ def run_sql(
     password = ORACLE_JSON[db_id]["ORACLE_PASSWORD"]
     if not is_safe_query(sql):
         print("Not Safe!")
-    oracledb.init_oracle_client(lib_dir="/tmp/opt/oracle/instantclient_19_28")
+    oracledb.init_oracle_client(lib_dir=os.environ.get("ORACLE_CLIENT_LIB_DIR") or None)
     try: conn = oracledb.connect(user=user, password = password, dsn=f"{host}:{port}/{service_name}")
     except:
         print("error")
